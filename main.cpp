@@ -291,66 +291,47 @@ void handleUploadRequest(EthernetClient & client, long content_length) {
 }
 
 void handleFileUpload(EthernetClient & client, const String & content_type, long content_length) {
-
-    //Serial.print("handleFileUpload(client, ");
-    //Serial.print(content_type);
-    //Serial.print(", ");
-    //Serial.print(content_length);
-    //Serial.println(")");
     String boundary;
     String disposition;
     String part_content_type;
     int header_length = readMultipartFormDataHeaders(client, boundary, disposition, part_content_type);
-    Serial.println(header_length);
+
     long expected_length = content_length - header_length - (boundary.length() + 4);
-    Serial.print("expected length = ");
-    Serial.println(expected_length);
+
     // TODO: Watchdog timer
     uint8_t buffer[HTTP_BUFFER_SIZE + 1];
     long actual_length = 0;
     while (client.connected()) {
-        Serial.println("Still connected");
         while (int available = client.available()) {
-            //Serial.print(length);
-            //Serial.print(" - ");
-            //Serial.println(available);
-
             int num_remaining = expected_length - actual_length;
             int num_to_read = min(min(available, HTTP_BUFFER_SIZE), num_remaining);
             int num_read = client.read(buffer, num_to_read);
             if (num_read < 0) {
-                //Serial.println(num_read);
                 break;
             }
             actual_length += num_read;
 
-            buffer[num_read] = '\0';
-            Serial.print(reinterpret_cast<char*>(buffer));
+            //buffer[num_read] = '\0';
+            //Serial.print(reinterpret_cast<char*>(buffer));
 
-            Serial.print(actual_length);
-            Serial.print(" : ");
-            Serial.print(expected_length);
             if (actual_length >= expected_length) {
                 goto stop;
             }
         }
-        //Serial.print("length = ");
-        //Serial.print(length);
     }
+
     stop:
-    Serial.print("<<<");
     String end_boundary = readHttpLine(client);
-    Serial.println(boundary);
-    Serial.println(end_boundary);
     if (end_boundary == boundary + "--") {
         Serial.println("Found boundary   ");
+        String message(actual_length);
+        message += " bytes uploaded.";
+        httpOkScalar(client, message);
     }
     else {
         Serial.println("Missing boundary");
-}
-    String message(actual_length);
-    message += " bytes uploaded.";
-    httpOkScalar(client, message);
+        httpBadRequest(client, "Missing boundary");
+    }
 }
 
 void handleHomeRequest(EthernetClient & client, long content_length) {
