@@ -20,11 +20,12 @@ void setup()
 	sd::initialize();
 
 	Ethernet.begin(mac, ip);
-	Serial.println("Beginning server...");
+	Serial.println(F("Beginning server..."));
 	server.begin();
 }
 
 #define HTTP_BUFFER_SIZE 255
+
 
 /**
  *  Read a line from the EthernetClient.
@@ -40,10 +41,15 @@ String readHttpLine(EthernetClient & client) {
 				break;
 			}
 
+			//Serial.println(b);
+			//Serial.flush();
+
 			char c = static_cast<char>(b);
 
 			if (c == '\r') {   // carriage-return
-				client.read(); // line-feed
+				b = client.read(); // line-feed
+				//Serial.println(b);
+				//Serial.flush();
 				break;
 			}
 
@@ -56,6 +62,7 @@ String readHttpLine(EthernetClient & client) {
 	    }
 	}
 	buffer[index] = '\0';
+	//Serial.println(index);
 	return String(buffer);
 }
 
@@ -76,18 +83,18 @@ HttpMethod parseHttpMethod(const String & method_token) {
 void readHttpHeaders(EthernetClient & client, long & content_length, String & content_type) {
 	while (true) {
 		String header_line = readHttpLine(client);
-		Serial.print("HEADER: ");
-		Serial.println(header_line);
+		//Serial.print(F("HEADER: "));
+		//Serial.println(header_line);
 
 		if (header_line.startsWith("Content-Length:")) {
 			content_length = header_line.substring(16).toInt();
-			Serial.print("Content length = ");
-			Serial.println(content_length);
+			//Serial.print(F("Content length = "));
+			//Serial.println(content_length);
 		}
 		else if (header_line.startsWith("Content-Type:")) {
 			content_type = header_line.substring(14);
-			Serial.print("Content type = ");
-			Serial.println(content_type);
+			//Serial.print(F("Content type = "));
+			//Serial.println(content_type);
 		}
 
 		if (header_line.length() == 0) {
@@ -100,26 +107,28 @@ int readMultipartFormDataHeaders(EthernetClient & client, String & boundary, Str
     int header_length = 0;
     boundary = readHttpLine(client);
     header_length += boundary.length() + 2;
-    Serial.print("BOUNDARY: ");
-    Serial.println(boundary);
+    //Serial.print(F("BOUNDARY: "));
+    //Serial.println(boundary);
     while (true) {
         String header_line = readHttpLine(client);
         header_length += header_line.length() + 2;
-        Serial.print("MULTIHEADER: ");
-        Serial.println(header_line);
+        //Serial.print(F("MULTIHEADER: "));
+        //Serial.println(header_line);
 
         if (header_line.startsWith("Content-Disposition:")) {
             disposition = header_line.substring(21);
-            Serial.print("Disposition = ");
-            Serial.println(disposition);
+            //Serial.print(F("Disposition = "));
+            //Serial.println(disposition);
         }
         else if (header_line.startsWith("Content-Type:")) {
             content_type = header_line.substring(14);
-            Serial.print("Content type = ");
-            Serial.println(content_type);
+            //Serial.print(F("Content type = "));
+            //Serial.println(content_type);
+            //Serial.flush();
         }
-
+        Serial.println(header_line.length());
         if (header_line.length() == 0) {
+            //Serial.println(F("End header!"));
             break;
         }
     }
@@ -145,8 +154,8 @@ void readHttpContent(EthernetClient& client, long content_length, String& conten
 		content += c;
 	}
 
-	Serial.print("CONTENT: ");
-	Serial.println(content);
+	//Serial.print(F("CONTENT: "));
+	//Serial.println(content);
 }
 
 /**
@@ -185,42 +194,42 @@ HttpMethod readHttpRequest(EthernetClient & client, String & url, String & conte
 
 
 void httpBadRequest(EthernetClient& client, const String & content) {
-	client.println("HTTP/1.1 400 Bad Request");
-	client.println("Content-Type: text/plain");
-	client.print("Content-Length: ");
+	client.println(F("HTTP/1.1 400 Bad Request"));
+	client.println(F("Content-Type: text/plain"));
+	client.print(F("Content-Length: "));
 	client.println(content.length());
 	client.println();
 	client.print(content);
 }
 
 void httpMethodNotAllowed(EthernetClient& client, const String & content) {
-	client.println("HTTP/1.1 405 Method Not Allowed");
-	client.println("Content-Type: text/plain");
-	client.print("Content-Length: ");
+	client.println(F("HTTP/1.1 405 Method Not Allowed"));
+	client.println(F("Content-Type: text/plain"));
+	client.print(F("Content-Length: "));
 	client.println(content.length());
 	client.println();
 	client.print(content);
 }
 
 void httpNotFound(EthernetClient& client, const String & content) {
-	client.println("HTTP/1.1 404 Not Found");
-	client.println("Content-Type: text/plain");
-	client.print("Content-Length: ");
+	client.println(F("HTTP/1.1 404 Not Found"));
+	client.println(F("Content-Type: text/plain"));
+	client.print(F("Content-Length: "));
 	client.println(content.length());
 	client.println();
 	client.print(content);
 }
 
 void httpGone(EthernetClient& client) {
-	client.println("HTTP/1.1 410 Gone");
-	client.print("Content-Length: 0");
+	client.println(F("HTTP/1.1 410 Gone"));
+	client.print(F("Content-Length: 0"));
 	client.println();
 }
 
 void httpServiceUnavailable(EthernetClient& client, const String & content) {
-	client.println("HTTP/1.1 503 Service Unavailable");
-	client.println("Content-Type: text/plain");
-	client.print("Content-Length: ");
+	client.println(F("HTTP/1.1 503 Service Unavailable"));
+	client.println(F("Content-Type: text/plain"));
+	client.print(F("Content-Length: "));
 	client.println(content.length());
 	client.println();
 	client.print(content);
@@ -248,30 +257,30 @@ String makeString(String value) {
 template <typename T>
 void httpOkScalar(EthernetClient& client, T scalar) {
 	String response_content = makeString(scalar);
-	client.println("HTTP/1.1 200 OK");
-	client.println("Content-Type: text/plain");
-	client.print("Content-Length: ");
+	client.println(F("HTTP/1.1 200 OK"));
+	client.println(F("Content-Type: text/plain"));
+	client.print(F("Content-Length: "));
 	client.println(response_content.length());
 	client.println();
 	client.println(response_content);
 }
 
 void httpOk(EthernetClient& client, const String & content_type) {
-    client.println("HTTP/1.1 200 OK");
-    client.print("Content-Type: ");
+    client.println(F("HTTP/1.1 200 OK"));
+    client.print(F("Content-Type: "));
     client.println(content_type);
     client.println();
 }
 
 void htmlHeader(EthernetClient& client, const String & title) {
-    client.println("<!DOCTYPE html>");
-    client.println("<html lang=\"en\">");
-    client.println("<head>");
-    client.println("<meta charset=\"utf-8\">");
-    client.print("<title>");
+    client.println(F("<!DOCTYPE html>"));
+    client.println(F("<html lang=\"en\">"));
+    client.println(F("<head>"));
+    client.println(F("<meta charset=\"utf-8\">"));
+    client.print(F("<title>"));
     client.print(title);
-    client.println("</title>");
-    client.println("</head>");
+    client.println(F("</title>"));
+    client.println(F("</head>"));
 }
 
 void handleUploadRequest(EthernetClient & client, long content_length) {
@@ -279,15 +288,15 @@ void handleUploadRequest(EthernetClient & client, long content_length) {
 
     httpOk(client, "text/html");
     htmlHeader(client, "Upload - Mistral");
-    client.println("<body>");
-    client.println("<body>");
-    client.println("<form id=\"form1\" enctype=\"multipart/form-data\" method=\"post\" action=\"submit\">");
-    client.println("<label for=\"fileToUpload\">Select a File to Upload</label><br />");
-    client.println("<input type=\"file\" name=\"fileToUpload\" id=\"fileToUpload\" />");
-    client.println("<input type=\"submit\" />");
-    client.println("</form>");
-    client.println("</body>");
-    client.println("</html>");
+    client.println(F("<body>"));
+    client.println(F("<body>"));
+    client.println(F("<form id=\"form1\" enctype=\"multipart/form-data\" method=\"post\" action=\"submit\">"));
+    client.println(F("<label for=\"fileToUpload\">Select a File to Upload</label><br />"));
+    client.println(F("<input type=\"file\" name=\"fileToUpload\" id=\"fileToUpload\" />"));
+    client.println(F("<input type=\"submit\" />"));
+    client.println(F("</form>"));
+    client.println(F("</body>"));
+    client.println(F("</html>"));
 }
 
 void handleFileUpload(EthernetClient & client, const String & content_type, long content_length) {
@@ -303,14 +312,16 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     long actual_length = 0;
     while (client.connected()) {
         while (int available = client.available()) {
-            int num_remaining = expected_length - actual_length;
+            long num_remaining = expected_length - actual_length;
             int num_to_read = min(min(available, HTTP_BUFFER_SIZE), num_remaining);
             int num_read = client.read(buffer, num_to_read);
             if (num_read < 0) {
                 break;
             }
             actual_length += num_read;
-
+            //Serial.print(actual_length);
+            //Serial.print(" : ");
+            //Serial.println(expected_length);
             //buffer[num_read] = '\0';
             //Serial.print(reinterpret_cast<char*>(buffer));
 
@@ -323,13 +334,13 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     stop:
     String end_boundary = readHttpLine(client);
     if (end_boundary == boundary + "--") {
-        Serial.println("Found boundary   ");
+        Serial.println(F("Found boundary   "));
         String message(actual_length);
         message += " bytes uploaded.";
         httpOkScalar(client, message);
     }
     else {
-        Serial.println("Missing boundary");
+        Serial.println(F("Missing boundary"));
         httpBadRequest(client, "Missing boundary");
     }
 }
@@ -339,7 +350,7 @@ void handleHomeRequest(EthernetClient & client, long content_length) {
 
     httpOk(client, "text/html");
     htmlHeader(client, "Listing - Mistral");
-	client.println("<body>");
+	client.println(F("<body>"));
     uint8_t flags = 0;
     dir_t p;
     sd::root().rewind();
@@ -374,8 +385,8 @@ void handleHomeRequest(EthernetClient & client, long content_length) {
         }
         client.println("<br>");
     }
-    client.println("</body>");
-    client.println("</html>");
+    client.println(F("</body>"));
+    client.println(F("</html>"));
 }
 
 void handleRequest(EthernetClient & client, HttpMethod method, const String & url, const String & content_type, long content_length) {
