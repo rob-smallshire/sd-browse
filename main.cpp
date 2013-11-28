@@ -226,6 +226,15 @@ void httpGone(EthernetClient& client) {
 	client.println();
 }
 
+void httpInternalServerError(EthernetClient& client, const String & content) {
+    client.println(F("HTTP/1.1 500 Internal Server Error"));
+    client.println(F("Content-Type: text/plain"));
+    client.print(F("Content-Length: "));
+    client.println(content.length());
+    client.println();
+    client.print(content);
+}
+
 void httpServiceUnavailable(EthernetClient& client, const String & content) {
 	client.println(F("HTTP/1.1 503 Service Unavailable"));
 	client.println(F("Content-Type: text/plain"));
@@ -304,8 +313,20 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     String disposition;
     String part_content_type;
     int header_length = readMultipartFormDataHeaders(client, boundary, disposition, part_content_type);
+    Serial.println(disposition);
+
+    String filename_key = String("filename=");
+    int filename_index = disposition.indexOf("filename=");
+    int filename_start = filename_index + filename_key.length() + 1;
+    int filename_end = disposition.indexOf('"', filename_start);
+    String filename = disposition.substring(filename_start, filename_end);
 
     long expected_length = content_length - header_length - (boundary.length() + 4);
+
+    //SdFile myFile;
+    //if (!myFile.open(filename, O_READ)) {
+    //   httpInternalServerError(client, "Opening " + filename + " for write failed");
+    //}
 
     // TODO: Watchdog timer
     uint8_t buffer[HTTP_BUFFER_SIZE + 1];
