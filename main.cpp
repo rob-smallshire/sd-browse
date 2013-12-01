@@ -274,10 +274,14 @@ void httpOkScalar(EthernetClient& client, T scalar) {
 	client.println(response_content);
 }
 
-void httpOk(EthernetClient& client, const String & content_type) {
+void httpOk(EthernetClient& client, const String & content_type, long content_length = 0) {
     client.println(F("HTTP/1.1 200 OK"));
     client.print(F("Content-Type: "));
     client.println(content_type);
+    if (content_length > 0) {
+        client.print(F("Content-Length: "));
+        client.println(content_length);
+    }
     client.println();
 }
 
@@ -321,12 +325,18 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     int filename_end = disposition.indexOf('"', filename_start);
     String filename = disposition.substring(filename_start, filename_end);
 
+    if (filename.length() > 12) {
+        httpBadRequest(client, "Filename too long.");
+        return;
+    }
+
     long expected_length = content_length - header_length - (boundary.length() + 4);
 
-    //SdFile myFile;
-    //if (!myFile.open(filename, O_READ)) {
-    //   httpInternalServerError(client, "Opening " + filename + " for write failed");
-    //}
+    SdFile new_file;
+    if (!new_file.open(&sd::root(), filename.c_str(), O_RDWR | O_CREAT | O_AT_END)) {
+       httpInternalServerError(client, "Opening " + filename + " for write failed");
+       return;
+    }
 
     // TODO: Watchdog timer
     uint8_t buffer[HTTP_BUFFER_SIZE + 1];
@@ -345,6 +355,7 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
             //Serial.println(expected_length);
             //buffer[num_read] = '\0';
             //Serial.print(reinterpret_cast<char*>(buffer));
+            new_file.write(buffer, num_read);
 
             if (actual_length >= expected_length) {
                 goto stop;
@@ -353,6 +364,9 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     }
 
     stop:
+
+    new_file.close();
+
     String end_boundary = readHttpLine(client);
     if (end_boundary == boundary + "--") {
         Serial.println(F("Found boundary   "));
@@ -362,57 +376,140 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
     }
     else {
         Serial.println(F("Missing boundary"));
+        new_file.remove();
         httpBadRequest(client, "Missing boundary");
     }
 }
 
-void handleHomeRequest(EthernetClient & client, long content_length) {
+void handleDirListRequest(EthernetClient & client, const String & path, long content_length) {
+    Serial.println(F("DIR"));
     skipHttpContent(client, content_length);
+
+    // TODO: Validate URL
 
     httpOk(client, "text/html");
     htmlHeader(client, "Listing - Mistral");
-	client.println(F("<body>"));
+    client.println(F("<body>"));
     uint8_t flags = 0;
+
+    SdFile& dir = sd::root();
+    dir.rewind();
+
+    client.println(F("<ul>"));
+
     dir_t p;
-    sd::root().rewind();
-    while (sd::root().readDir(&p) > 0) {
+    while (dir.readDir(&p) > 0) {
+
         if (p.name[0] == DIR_NAME_FREE) break;
 
         if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.') continue;
 
         if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
 
+        client.print(F("<li>"));
+
+        String name;
         for (uint8_t i = 0; i < 11; i++) {
           if (p.name[i] == ' ') continue;
           if (i == 8) {
-            client.print('.');
+            name += '.';
+            //client.print('.');
           }
-          client.print(static_cast<char>(p.name[i]));
+          name += static_cast<char>(p.name[i]);
+          //client.print(static_cast<char>(p.name[i]));
         }
         if (DIR_IS_SUBDIR(&p)) {
-          client.print('/');
+          name += '/';
+          //client.print('/');
         }
 
+        client.print(F("<a href= \"/sd/")); // TODO: Will be dir path
+        client.print(name);
+        client.print(F("\">"));
+        client.print(name);
+        client.print(F("</a>"));
+
+        client.println(F("</li>"));
+
         // print modify date/time if requested
-        if (flags & LS_DATE) {
-           sd::root().printFatDate(p.lastWriteDate);
-           client.print(' ');
-           sd::root().printFatTime(p.lastWriteTime);
-        }
+        //if (flags & LS_DATE) {
+        //   dir.printFatDate(p.lastWriteDate);
+        //   client.print(' ');
+        //   dir.printFatTime(p.lastWriteTime);
+        //}
         // print size if requested
-        if (!DIR_IS_SUBDIR(&p) && (flags & LS_SIZE)) {
-          client.print(' ');
-          client.print(p.fileSize);
-        }
-        client.println("<br>");
+        //if (!DIR_IS_SUBDIR(&p) && (flags & LS_SIZE)) {
+        //  client.print(' ');
+        //  client.print(p.fileSize);
+        //}
+        //client.println("<li/>");
     }
+    client.println(F("</ul>"));
+
     client.println(F("</body>"));
     client.println(F("</html>"));
 }
 
+String contentTypeFromName(const String & path) {
+    String lower_path = path;
+    lower_path.toLowerCase();
+    if (lower_path.endsWith(".htm")) return "text/html";
+    if (lower_path.endsWith(".css")) return "text/css";
+    if (lower_path.endsWith(".csv")) return "text/csv";
+    if (lower_path.endsWith(".xml")) return "text/xml";
+    if (lower_path.endsWith(".txt")) return "text/plain";
+    if (lower_path.endsWith(".png")) return "image/png";
+    if (lower_path.endsWith(".jpg")) return "image/jpeg";
+    if (lower_path.endsWith(".gif")) return "image/gif";
+    if (lower_path.endsWith(".svg")) return "image/svg+xml";
+    if (lower_path.endsWith(".js")) return "application/javascript";
+    return "application/octet-stream";
+}
+
+void handleFileBrowseRequest(EthernetClient & client, const String & path, long content_length)
+{
+    Serial.println(F("FILE"));
+    Serial.println(path);
+    SdFile file;
+    if (!file.open(&sd::root(), path.c_str(), O_READ)) {
+       httpNotFound(client, "Could not open " + path);
+       return;
+    }
+    if (!file.isFile()) {
+        httpBadRequest(client, "Not a file");
+        return;
+    }
+
+    String content_type = contentTypeFromName(path);
+    Serial.println(content_type);
+
+    uint32_t length = file.fileSize();
+    Serial.println(length);
+
+    httpOk(client, content_type, length);
+
+    int16_t c;
+    while ((c = file.read()) > 0) {
+        client.print(static_cast<char>(c));
+    }
+
+    file.close();
+}
+
+void handleFileSystemRequest(EthernetClient & client, const String & url, long content_length) {
+    String path = url.substring(4); // len("/sd/")
+    if (url.endsWith("/")) {
+        handleDirListRequest(client, path, content_length);
+    }
+    else {
+        handleFileBrowseRequest(client, path, content_length);
+    }
+}
+
 void handleRequest(EthernetClient & client, HttpMethod method, const String & url, const String & content_type, long content_length) {
-    if (url == "/root") {
-		handleHomeRequest(client, content_length);
+    if (url.startsWith("/sd/")) {
+        handleFileSystemRequest(client, url, content_length);
+		//handleHomeRequest(client, content_length);
     } else if (url == "/upload") {
         handleUploadRequest(client, content_length);
     } else if (url == "/submit") {
