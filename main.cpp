@@ -2,6 +2,7 @@
 #include <Ethernet.h>
 
 #include "sdcard.hpp"
+#include "url.hpp"
 
 // Enter a MAC address and IP address for your controller below.
 // The IP address will be dependent on your local network:
@@ -71,12 +72,14 @@ enum HttpMethod {
 	HTTP_GET,
 	HTTP_PUT,
 	HTTP_POST,
+	HTTP_DELETE,
 };
 
 HttpMethod parseHttpMethod(const String & method_token) {
 	if (method_token == "GET") return HTTP_GET;
 	if (method_token == "PUT") return HTTP_PUT;
 	if (method_token == "POST") return HTTP_POST;
+	if (method_token == "DELETE") return HTTP_DELETE;
 	return HTTP_UNKNOWN;
 }
 
@@ -445,7 +448,12 @@ void handleDirListRequest(EthernetClient & client, const String & path, long con
         //client.println("<li/>");
     }
     client.println(F("</ul>"));
-
+    client.println(F("<form name=\"delete\" action=\"/delete\" method=\"post\">"));
+    // TODO: Embed current directory path in here as a hidden field
+    client.println(F("<input type=\"hidden\" name=\"path\" value=\"/\"/>"));
+    client.println(F("<input type=\"text\" name=\"filename\" placeholder=\"Filename\"/>"));
+    client.println(F("<input type=\"submit\" value=\"Delete\" />"));
+    client.println(F("</form>"));
     client.println(F("</body>"));
     client.println(F("</html>"));
 }
@@ -506,6 +514,48 @@ void handleFileSystemRequest(EthernetClient & client, const String & url, long c
     }
 }
 
+void handleFileDelete(EthernetClient & client,  HttpMethod method, const String & content_type, long content_length) {
+    if (method != HTTP_POST) {
+        httpMethodNotAllowed(client, "Method not allowed");
+    }
+
+    String content;
+    readHttpContent(client, content_length, content);
+
+    content = url_decode(content);
+
+    String path_key("path=");
+    int pathIndex = content.indexOf(path_key) + path_key.length();
+    String filename_key("filename=");
+    int filenameIndex = content.indexOf(filename_key, pathIndex) + filename_key.length();
+    String path = content.substring(pathIndex + 1, filenameIndex - filename_key.length() - 1);
+    String filename = content.substring(filenameIndex);
+    Serial.println(content);
+    Serial.println(path);
+    Serial.println(filename);
+
+    SdFile dir;
+    if (path.length() == 0) {
+        dir = sd::root();
+    }
+    else if(!dir.open(&sd::root(), path.c_str(), O_READ)) {
+        httpNotFound(client, "Could not open " + path);
+        return;
+    }
+
+    if (!dir.isDir()) {
+        httpBadRequest(client, path + "is not a directory");
+        return;
+    }
+
+    bool success = SdFile::remove(&dir, filename.c_str());
+    if (!success) {
+        httpBadRequest(client, "Could not delete " + filename);
+        return;
+    }
+    httpOk(client, "text/plain");
+}
+
 void handleRequest(EthernetClient & client, HttpMethod method, const String & url, const String & content_type, long content_length) {
     if (url.startsWith("/sd/")) {
         handleFileSystemRequest(client, url, content_length);
@@ -514,6 +564,8 @@ void handleRequest(EthernetClient & client, HttpMethod method, const String & ur
         handleUploadRequest(client, content_length);
     } else if (url == "/submit") {
         handleFileUpload(client, content_type, content_length);
+    } else if (url == "/delete") {
+        handleFileDelete(client, method, content_type, content_length);
 	} else if (url == "/favicon.ico") {
 		httpGone(client);
 	} else {
