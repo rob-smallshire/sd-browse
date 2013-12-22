@@ -203,8 +203,6 @@ HttpMethod readHttpRequest(EthernetClient & client, String & url, String & conte
 	content_length = -1;
 	readHttpHeaders(client, content_length, content_type);
 
-
-
 	// TODO: Add a check for the Host header - important for compliance with HTTP/1.1
 
 	//client.flush();
@@ -330,8 +328,6 @@ String extractValueWithKey(const String & s, const String & key) {
     int end = s.indexOf('"', start);
     return s.substring(start, end);
 }
-
-
 
 void uploadFile(EthernetClient & client, const String & boundary, const String & path,
                 const String & filename, long expected_length) {
@@ -469,6 +465,18 @@ void hidden_path_field(EthernetClient client, const String & path) {
     client.println(F("\"/>"));
 }
 
+void renderBrowseItem(EthernetClient& client, const String& path,
+        const String& name, const String & label) {
+    client.print(F("<li>"));
+    client.print(F("<a href= \"/sd/"));
+    client.print(path);
+    client.print(name);
+    client.print(F("\">"));
+    client.print(label);
+    client.print(F("</a>"));
+    client.println(F("</li>"));
+}
+
 void renderDirList(EthernetClient& client, const String& path) {
     SdBaseFile dir;
     bool success =
@@ -483,6 +491,11 @@ void renderDirList(EthernetClient& client, const String& path) {
     htmlHeader(client, "Listing - Mistral");
     client.println(F("<body>"));
     client.println(F("<ul>"));
+    if (!dir.isRoot()) {
+        int slash_index = path.substring(0, path.length() - 1).lastIndexOf('/');
+        String parent_path = path.substring(0, slash_index + 1);
+        renderBrowseItem(client, parent_path, "", ".. Parent");
+    }
     dir_t p;
     while (dir.readDir(&p) > 0) {
 
@@ -495,7 +508,6 @@ void renderDirList(EthernetClient& client, const String& path) {
         if (!DIR_IS_FILE_OR_SUBDIR(&p))
             continue;
 
-        client.print(F("<li>"));
 
         String name;
         for (uint8_t i = 0; i < 11; i++) {
@@ -513,14 +525,7 @@ void renderDirList(EthernetClient& client, const String& path) {
             //client.print('/');
         }
 
-        client.print(F("<a href= \"/sd/"));
-        client.print(path);
-        client.print(name);
-        client.print(F("\">"));
-        client.print(name);
-        client.print(F("</a>"));
-
-        client.println(F("</li>"));
+        renderBrowseItem(client, path, name, name);
     }
     client.println(F("</ul>"));
     client.println(
@@ -638,7 +643,13 @@ void handleFileDelete(EthernetClient & client,  HttpMethod method, const String 
 
     String full_path = path + filename;
 
-    bool success = sd.remove(full_path.c_str());
+    bool success;
+    if (filename.endsWith("/")) {
+        success = sd.rmdir(full_path.c_str());
+    }
+    else {
+        success = sd.remove(full_path.c_str());
+    }
     if (!success) {
         httpBadRequest(client, "Could not delete " + full_path);
         return;
