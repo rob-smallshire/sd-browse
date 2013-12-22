@@ -1,8 +1,16 @@
 #include <SPI.h>
 #include <Ethernet.h>
 
-#include "sdcard.hpp"
+#include <SdFat.h>
+
 #include "url.hpp"
+
+void renderDirList(EthernetClient& client, const String& path);
+
+const uint8_t SLAVE_SELECT = 53;
+const uint8_t SD_CHIP_SELECT = 4;
+// file system
+SdFat sd;
 
 // Enter a MAC address and IP address for your controller below.
 // The IP address will be dependent on your local network:
@@ -14,11 +22,20 @@ IPAddress ip(10, 0, 0, 24);
 // (port 80 is default for HTTP):
 EthernetServer server(80);
 
+template <typename T>
+void printkv(const String& key, const T & value) {
+    Serial.print(key);
+    Serial.print(" = ");
+    Serial.println(value);
+}
+
 void setup()
 {
 	Serial.begin(9600);
 
-	sd::initialize();
+	pinMode(SLAVE_SELECT, OUTPUT);     // change this to 53 on a mega
+	digitalWrite(SLAVE_SELECT, HIGH);  // Disable W5100 Ethernet
+	if (!sd.begin(SD_CHIP_SELECT, SPI_HALF_SPEED)) sd.initErrorHalt();
 
 	Ethernet.begin(mac, ip);
 	Serial.println(F("Beginning server..."));
@@ -86,8 +103,8 @@ HttpMethod parseHttpMethod(const String & method_token) {
 void readHttpHeaders(EthernetClient & client, long & content_length, String & content_type) {
 	while (true) {
 		String header_line = readHttpLine(client);
-		//Serial.print(F("HEADER: "));
-		//Serial.println(header_line);
+		Serial.print(F("HEADER: "));
+		Serial.println(header_line);
 
 		if (header_line.startsWith("Content-Length:")) {
 			content_length = header_line.substring(16).toInt();
@@ -106,7 +123,7 @@ void readHttpHeaders(EthernetClient & client, long & content_length, String & co
 	}
 }
 
-int readMultipartFormDataHeaders(EthernetClient & client, String & boundary, String & disposition, String & content_type) {
+int readMultipartFormDataHeader(EthernetClient & client, String & boundary, String & disposition, String & content_type) {
     int header_length = 0;
     boundary = readHttpLine(client);
     header_length += boundary.length() + 2;
@@ -115,8 +132,8 @@ int readMultipartFormDataHeaders(EthernetClient & client, String & boundary, Str
     while (true) {
         String header_line = readHttpLine(client);
         header_length += header_line.length() + 2;
-        //Serial.print(F("MULTIHEADER: "));
-        //Serial.println(header_line);
+        Serial.print(F("MULTIHEADER: "));
+        Serial.println(header_line);
 
         if (header_line.startsWith("Content-Disposition:")) {
             disposition = header_line.substring(21);
@@ -288,6 +305,14 @@ void httpOk(EthernetClient& client, const String & content_type, long content_le
     client.println();
 }
 
+void httpOkRedirect(EthernetClient& client, const String & location) {
+    client.println(F("HTTP/1.1 200 OK"));
+    client.print(F("Location: "));
+    client.println(location);
+    client.print(F("Content-Length: 0"));
+    client.println();
+}
+
 void htmlHeader(EthernetClient& client, const String & title) {
     client.println(F("<!DOCTYPE html>"));
     client.println(F("<html lang=\"en\">"));
@@ -299,44 +324,26 @@ void htmlHeader(EthernetClient& client, const String & title) {
     client.println(F("</head>"));
 }
 
-void handleUploadRequest(EthernetClient & client, long content_length) {
-    skipHttpContent(client, content_length);
-
-    httpOk(client, "text/html");
-    htmlHeader(client, "Upload - Mistral");
-    client.println(F("<body>"));
-    client.println(F("<body>"));
-    client.println(F("<form id=\"form1\" enctype=\"multipart/form-data\" method=\"post\" action=\"submit\">"));
-    client.println(F("<label for=\"fileToUpload\">Select a File to Upload</label><br />"));
-    client.println(F("<input type=\"file\" name=\"fileToUpload\" id=\"fileToUpload\" />"));
-    client.println(F("<input type=\"submit\" />"));
-    client.println(F("</form>"));
-    client.println(F("</body>"));
-    client.println(F("</html>"));
+String extractValueWithKey(const String & s, const String & key) {
+    int index = s.indexOf(' ' + key + '=');
+    int start = index + key.length() + 3;
+    int end = s.indexOf('"', start);
+    return s.substring(start, end);
 }
 
-void handleFileUpload(EthernetClient & client, const String & content_type, long content_length) {
-    String boundary;
-    String disposition;
-    String part_content_type;
-    int header_length = readMultipartFormDataHeaders(client, boundary, disposition, part_content_type);
-    Serial.println(disposition);
 
-    String filename_key = String("filename=");
-    int filename_index = disposition.indexOf("filename=");
-    int filename_start = filename_index + filename_key.length() + 1;
-    int filename_end = disposition.indexOf('"', filename_start);
-    String filename = disposition.substring(filename_start, filename_end);
 
-    if (filename.length() > 12) {
-        httpBadRequest(client, "Filename too long.");
-        return;
-    }
+void uploadFile(EthernetClient & client, const String & boundary, const String & path,
+                const String & filename, long expected_length) {
+    printkv("boundary", boundary);
+    printkv("path", path);
+    printkv("filename", filename);
+    printkv("expected_length", expected_length);
 
-    long expected_length = content_length - header_length - (boundary.length() + 4);
+    String full_path = path + filename;
 
     SdFile new_file;
-    if (!new_file.open(&sd::root(), filename.c_str(), O_RDWR | O_CREAT | O_AT_END)) {
+    if (!new_file.open(full_path.c_str(), O_RDWR | O_CREAT | O_AT_END)) {
        httpInternalServerError(client, "Opening " + filename + " for write failed");
        return;
     }
@@ -353,11 +360,15 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
                 break;
             }
             actual_length += num_read;
-            //Serial.print(actual_length);
-            //Serial.print(" : ");
-            //Serial.println(expected_length);
+            Serial.print(actual_length);
+            Serial.print(" : ");
+            Serial.println(expected_length);
             //buffer[num_read] = '\0';
-            //Serial.print(reinterpret_cast<char*>(buffer));
+            //for (int i = 0; i < num_read; ++i) {
+            //    Serial.print(static_cast<int>(buffer[i]));
+            //    Serial.print(' ');
+            //}
+            //Serial.println();
             new_file.write(buffer, num_read);
 
             if (actual_length >= expected_length) {
@@ -370,92 +381,182 @@ void handleFileUpload(EthernetClient & client, const String & content_type, long
 
     new_file.close();
 
+    readHttpLine(client); // Swallow newline
     String end_boundary = readHttpLine(client);
-    if (end_boundary == boundary + "--") {
-        Serial.println(F("Found boundary   "));
-        String message(actual_length);
-        message += " bytes uploaded.";
-        httpOkScalar(client, message);
-    }
-    else {
-        Serial.println(F("Missing boundary"));
+    //printkv("end_boundary", end_boundary);
+    if (end_boundary != boundary + "--") {
+        //Serial.println(F("Missing boundary"));
         new_file.remove();
         httpBadRequest(client, "Missing boundary");
+        return;
     }
+    renderDirList(client, path);
+    return;
 }
 
-void handleDirListRequest(EthernetClient & client, const String & path, long content_length) {
-    Serial.println(F("DIR"));
-    skipHttpContent(client, content_length);
+int readUploadPath(EthernetClient & client, String & path) {
+    String boundary;
+    String disposition;
+    String part_content_type;
+    int header_length = readMultipartFormDataHeader(client, boundary, disposition, part_content_type);
+    if (header_length == 0) {
+        return -1;
+    }
+    Serial.println(disposition);
+    String name = extractValueWithKey(disposition, "name");
+    printkv("name", name);
+    if (name != "path") {
+        return -1;
+    }
 
-    // TODO: Validate URL
+    // Read two lines, the first of which is the field value, the second of which
+    // is the boundary
+    path = readHttpLine(client);
+    printkv("path", path);
+    return header_length + path.length() + 2;
+}
 
+int readUploadFilename(EthernetClient & client, String & filename, String & boundary) {
+    String disposition;
+    String part_content_type;
+    int header_length = readMultipartFormDataHeader(client, boundary, disposition, part_content_type);
+    if (header_length == 0) {
+        return -1;
+    }
+    Serial.println(disposition);
+    String name = extractValueWithKey(disposition, "name");
+    if (name != "fileToUpload") {
+        return -1;
+    }
+
+    filename = extractValueWithKey(disposition, "filename");
+
+    return header_length;
+}
+
+void handleFileUpload(EthernetClient & client, const String & content_type, long content_length) {
+
+    String path;
+    int part1_length = readUploadPath(client, path);
+    if (part1_length < 0) {
+        httpBadRequest(client, "Missing path");
+    }
+
+    String filename;
+    String boundary;
+    int part2_length = readUploadFilename(client, filename, boundary);
+    if (part2_length < 0) {
+        httpBadRequest(client, "Missing filename");
+    }
+
+    if (filename.length() > 12) {
+        // TODO: Should check for 8.3 compliance
+        httpBadRequest(client, "Filename too long.");
+        return;
+    }
+
+    printkv("content_length", content_length);
+    printkv("part1_length", part1_length);
+    printkv("part2_length", part2_length);
+    printkv("boundary.length()", boundary.length());
+    long expected_length = content_length - part1_length - part2_length - (boundary.length() + 6);
+    uploadFile(client, boundary, path, filename, expected_length);
+}
+
+void hidden_path_field(EthernetClient client, const String & path) {
+    client.print(F("<input type=\"hidden\" name=\"path\" value=\""));
+    client.print(path);
+    client.println(F("\"/>"));
+}
+
+void renderDirList(EthernetClient& client, const String& path) {
+    SdBaseFile dir;
+    bool success =
+            path.length() == 0 ?
+                    dir.openRoot(sd.vol()) : dir.open(path.c_str(), O_READ);
+    if (!success) {
+        httpBadRequest(client, "Cannot open directory " + path);
+        return;
+    }
+    dir.rewind();
     httpOk(client, "text/html");
     htmlHeader(client, "Listing - Mistral");
     client.println(F("<body>"));
-    uint8_t flags = 0;
-
-    SdFile& dir = sd::root();
-    dir.rewind();
-
     client.println(F("<ul>"));
-
     dir_t p;
     while (dir.readDir(&p) > 0) {
 
-        if (p.name[0] == DIR_NAME_FREE) break;
+        if (p.name[0] == DIR_NAME_FREE)
+            break;
 
-        if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.') continue;
+        if (p.name[0] == DIR_NAME_DELETED || p.name[0] == '.')
+            continue;
 
-        if (!DIR_IS_FILE_OR_SUBDIR(&p)) continue;
+        if (!DIR_IS_FILE_OR_SUBDIR(&p))
+            continue;
 
         client.print(F("<li>"));
 
         String name;
         for (uint8_t i = 0; i < 11; i++) {
-          if (p.name[i] == ' ') continue;
-          if (i == 8) {
-            name += '.';
-            //client.print('.');
-          }
-          name += static_cast<char>(p.name[i]);
-          //client.print(static_cast<char>(p.name[i]));
+            if (p.name[i] == ' ')
+                continue;
+            if (i == 8) {
+                name += '.';
+                //client.print('.');
+            }
+            name += static_cast<char>(p.name[i]);
+            //client.print(static_cast<char>(p.name[i]));
         }
         if (DIR_IS_SUBDIR(&p)) {
-          name += '/';
-          //client.print('/');
+            name += '/';
+            //client.print('/');
         }
 
-        client.print(F("<a href= \"/sd/")); // TODO: Will be dir path
+        client.print(F("<a href= \"/sd/"));
+        client.print(path);
         client.print(name);
         client.print(F("\">"));
         client.print(name);
         client.print(F("</a>"));
 
         client.println(F("</li>"));
-
-        // print modify date/time if requested
-        //if (flags & LS_DATE) {
-        //   dir.printFatDate(p.lastWriteDate);
-        //   client.print(' ');
-        //   dir.printFatTime(p.lastWriteTime);
-        //}
-        // print size if requested
-        //if (!DIR_IS_SUBDIR(&p) && (flags & LS_SIZE)) {
-        //  client.print(' ');
-        //  client.print(p.fileSize);
-        //}
-        //client.println("<li/>");
     }
     client.println(F("</ul>"));
-    client.println(F("<form name=\"delete\" action=\"/delete\" method=\"post\">"));
-    // TODO: Embed current directory path in here as a hidden field
-    client.println(F("<input type=\"hidden\" name=\"path\" value=\"/\"/>"));
-    client.println(F("<input type=\"text\" name=\"filename\" placeholder=\"Filename\"/>"));
+    client.println(
+            F("<form name=\"delete\" method=\"post\" action=\"/delete\">"));
+    hidden_path_field(client, path);
+    client.println(
+            F(
+                    "<input type=\"text\" name=\"filename\" placeholder=\"File/Directory Name\"/>"));
     client.println(F("<input type=\"submit\" value=\"Delete\" />"));
+    client.println(F("</form>"));
+    client.println(
+            F(
+                    "<form id=\"upload\" enctype=\"multipart/form-data\" method=\"post\" action=\"/upload\">"));
+    hidden_path_field(client, path);
+    client.println(
+            F(
+                    "<input type=\"file\" name=\"fileToUpload\" id=\"fileToUpload\" />"));
+    client.println(F("<input type=\"submit\" value=\"Upload\"/>"));
+    client.println(F("</form>"));
+    client.println(
+            F("<form name=\"mkdir\" method=\"post\" action=\"/mkdir\">"));
+    hidden_path_field(client, path);
+    client.println(
+            F(
+                    "<input type=\"text\" name=\"dirname\" placeholder=\"Directory Name\"/>"));
+    client.println(F("<input type=\"submit\" value=\"Make Directory\" />"));
     client.println(F("</form>"));
     client.println(F("</body>"));
     client.println(F("</html>"));
+}
+
+void handleDirListRequest(EthernetClient & client, const String & path, long content_length) {
+    Serial.print(F("DIR: "));
+    Serial.println(path);
+    skipHttpContent(client, content_length);
+    renderDirList(client, path);
 }
 
 String contentTypeFromName(const String & path) {
@@ -479,7 +580,7 @@ void handleFileBrowseRequest(EthernetClient & client, const String & path, long 
     Serial.println(F("FILE"));
     Serial.println(path);
     SdFile file;
-    if (!file.open(&sd::root(), path.c_str(), O_READ)) {
+    if (!file.open(sd.vwd(), path.c_str(), O_READ)) {
        httpNotFound(client, "Could not open " + path);
        return;
     }
@@ -497,7 +598,7 @@ void handleFileBrowseRequest(EthernetClient & client, const String & path, long 
     httpOk(client, content_type, length);
 
     int16_t c;
-    while ((c = file.read()) > 0) {
+    while ((c = file.read()) >= 0) {
         client.print(static_cast<char>(c));
     }
 
@@ -526,46 +627,63 @@ void handleFileDelete(EthernetClient & client,  HttpMethod method, const String 
 
     String path_key("path=");
     int pathIndex = content.indexOf(path_key) + path_key.length();
+
     String filename_key("filename=");
     int filenameIndex = content.indexOf(filename_key, pathIndex) + filename_key.length();
-    String path = content.substring(pathIndex + 1, filenameIndex - filename_key.length() - 1);
+    String path = content.substring(pathIndex, filenameIndex - filename_key.length() - 1);
     String filename = content.substring(filenameIndex);
-    Serial.println(content);
-    Serial.println(path);
-    Serial.println(filename);
+    printkv("content", content);
+    printkv("path", path);
+    printkv("filename", filename);
 
-    SdFile dir;
-    if (path.length() == 0) {
-        dir = sd::root();
-    }
-    else if(!dir.open(&sd::root(), path.c_str(), O_READ)) {
-        httpNotFound(client, "Could not open " + path);
-        return;
-    }
+    String full_path = path + filename;
 
-    if (!dir.isDir()) {
-        httpBadRequest(client, path + "is not a directory");
-        return;
-    }
-
-    bool success = SdFile::remove(&dir, filename.c_str());
+    bool success = sd.remove(full_path.c_str());
     if (!success) {
-        httpBadRequest(client, "Could not delete " + filename);
+        httpBadRequest(client, "Could not delete " + full_path);
         return;
     }
-    httpOk(client, "text/plain");
+    renderDirList(client, path);
+}
+
+void handleMkDir(EthernetClient & client,  HttpMethod method, const String & content_type, long content_length) {
+    if (method != HTTP_POST) {
+        httpMethodNotAllowed(client, "Method not allowed");
+    }
+
+    String content;
+    readHttpContent(client, content_length, content);
+
+    content = url_decode(content);
+
+    String path_key("path=");
+    int pathIndex = content.indexOf(path_key) + path_key.length();
+    String filename_key("dirname=");
+    int filenameIndex = content.indexOf(filename_key, pathIndex) + filename_key.length();
+    String path = content.substring(pathIndex, filenameIndex - filename_key.length() - 1);
+    String dirname = content.substring(filenameIndex);
+    printkv("content", content);
+    printkv("path", path);
+    printkv("dirname", dirname);
+
+    String full_path = path + dirname;
+    bool success = sd.mkdir(full_path.c_str());
+    if (!success) {
+        httpBadRequest(client, "Could not make directory " + dirname);
+        return;
+    }
+    renderDirList(client, path);
 }
 
 void handleRequest(EthernetClient & client, HttpMethod method, const String & url, const String & content_type, long content_length) {
     if (url.startsWith("/sd/")) {
         handleFileSystemRequest(client, url, content_length);
-		//handleHomeRequest(client, content_length);
     } else if (url == "/upload") {
-        handleUploadRequest(client, content_length);
-    } else if (url == "/submit") {
         handleFileUpload(client, content_type, content_length);
     } else if (url == "/delete") {
         handleFileDelete(client, method, content_type, content_length);
+    } else if (url == "/mkdir") {
+        handleMkDir(client, method, content_type, content_length);
 	} else if (url == "/favicon.ico") {
 		httpGone(client);
 	} else {
