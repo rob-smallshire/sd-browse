@@ -1,4 +1,5 @@
-mistral
-=======
+sd-browse
+=========
 
-Temperature controlled enclosure
+Arduino Mega + Ethernet based SD card HTTP browser with upload
+
